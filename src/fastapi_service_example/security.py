@@ -42,31 +42,40 @@ async def get_current_user(
 ):
     ### Note all three Security functions are auto_error=False,
     ### meaning if the scheme (header/cookie/param) isn't present
-    ### then they return None
-    if auth_by_cookie is not None:
-        async with get_client() as client:
-            endpoint = "/authorizations/cookie/%s/%s" % (COOKIE_NAME, auth_by_cookie)
-            resp = await client.get(endpoint)
-    elif auth_by_param is not None or auth_by_header is not None:
+    ### then they return None.
+    ### The cookie can be tricky, navigating to the Hub login
+    ### page but not logging in still sets a cookie, but
+    ### Hub API returns a 404 for that cookie
+    user = None
+    if auth_by_param is not None or auth_by_header is not None:
         token = auth_by_param or auth_by_header
         async with get_client() as client:
             endpoint = "/authorizations/token/%s" % token
             resp = await client.get(endpoint)
-    else:
+            if resp.is_error:
+                raise HTTPException(
+                    resp.status_code,
+                    detail={
+                        "msg": "Error getting user info from token",
+                        "request_url": str(resp.request.url),
+                        "token": token,
+                        "hub_response": resp.json(),
+                    },
+                )
+            else:
+                user = resp.json()
+
+    elif auth_by_cookie is not None:
+        async with get_client() as client:
+            endpoint = "/authorizations/cookie/%s/%s" % (COOKIE_NAME, auth_by_cookie)
+            resp = await client.get(endpoint)
+            if not resp.is_error:
+                user = resp.json()
+
+    if user is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            detail="Must login with token parameter, cookie, or Bearer token",
+            detail="Must login with token parameter, cookie, or header",
         )
-    ### Check if Hub returned a bad response
-    ### Give user the Hub resp code + json body for debug
-    if resp.is_error:
-        raise HTTPException(
-            resp.status_code,
-            detail={
-                "msg": "Error getting user info from Hub",
-                "request_url": resp.request.url,
-                "hub_response": resp.json(),
-            },
-        )
-    user = resp.json()
-    return user
+    else:
+        return user
